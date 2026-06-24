@@ -65,7 +65,7 @@ def get_production_model_mae(client: MlflowClient) -> float:
 
 def register_and_promote(client: MlflowClient, run_id: str, new_mae: float, prod_mae: float) -> bool:
     """Enregistre le modèle et le promeut en production s'il est meilleur."""
-    model_uri = f"runs:/{run_id}/models"
+    model_uri = f"runs:/{run_id}/model_bas_appart"
     result = mlflow.register_model(model_uri, MODEL_NAME)
     version = result.version
     print(f"[train] Modèle enregistré — version {version}")
@@ -78,11 +78,11 @@ def register_and_promote(client: MlflowClient, run_id: str, new_mae: float, prod
 
     if new_mae < prod_mae:
         client.set_registered_model_alias(MODEL_NAME, "production", version)
-        print(f"[train] ✅ Version {version} promue en PRODUCTION (MAE {new_mae:.2f} < {prod_mae:.2f})")
+        print(f"[train] [OK] Version {version} promue en PRODUCTION (MAE {new_mae:.2f} < {prod_mae:.2f})")
         return True
     else:
         client.set_registered_model_alias(MODEL_NAME, "challenger", version)
-        print(f"[train] ❌ Version {version} NOT promue — challenger (MAE {new_mae:.2f} >= {prod_mae:.2f})")
+        print(f"[train] [--] Version {version} NOT promue - challenger (MAE {new_mae:.2f} >= {prod_mae:.2f})")
         return False
 
 
@@ -183,7 +183,7 @@ def train():
 
         # Log des modèles comme artefacts MLflow
         for segment, model in models.items():
-            mlflow.xgboost.log_model(model, artifact_path=f"models/{segment}")
+            mlflow.xgboost.log_model(model, artifact_path=f"model_{segment}")
 
         # Log du meta fichier
         mlflow.log_artifact(META_PATH, artifact_path="meta")
@@ -198,4 +198,4 @@ if __name__ == "__main__":
     print(f"\n=== Résultat ===")
     print(f"Run ID   : {run_id}")
     print(f"MAE      : {mae:.2f} €/m²")
-    print(f"Promu    : {'✅ OUI' if promoted else '❌ NON'}")
+    print(f"Promu    : {'[OK] OUI' if promoted else '[--] NON'}")
