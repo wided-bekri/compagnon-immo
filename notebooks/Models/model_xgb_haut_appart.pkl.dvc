@@ -1,5 +1,0 @@
-outs:
-- md5: 74a4091efd46350f8bcfa676663e9d07
-  size: 13793768
-  hash: md5
-  path: model_xgb_haut_appart.pkl

@@ -1,5 +1,0 @@
-outs:
-- md5: 1b650a77111ade46d9fa49a0bd31f197
-  size: 13422152
-  hash: md5
-  path: model_xgb_haut_maison.pkl

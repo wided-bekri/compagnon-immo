@@ -1,0 +1,5 @@
+outs:
+- md5: 9146e4f0738504030f6b8f3d25af8f7f
+  size: 12845221
+  hash: md5
+  path: model_xgboost_single.pkl

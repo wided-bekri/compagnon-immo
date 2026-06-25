@@ -1,5 +1,0 @@
-outs:
-- md5: f0e460b2dabfba2db423d787a2dc87d5
-  size: 10135772
-  hash: md5
-  path: model_xgb_milieu_appart.pkl

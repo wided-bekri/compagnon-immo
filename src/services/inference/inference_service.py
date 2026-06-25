@@ -1,12 +1,11 @@
 import os
-import pickle
 import logging
+import time
 from contextlib import asynccontextmanager
 from typing import Optional
 
 import mlflow
 import mlflow.xgboost
-import numpy as np
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Header
 from pydantic import BaseModel, Field, field_validator
@@ -19,31 +18,56 @@ logger = logging.getLogger(__name__)
 # === Configuration ===
 MLFLOW_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI", "http://mlflow:5000")
 MODEL_NAME = "compagnon-immobilier"
-META_PATH = os.environ.get(
-    "META_PATH",
-    os.path.join(os.path.dirname(__file__), "../../../notebooks/Models/meta_6modeles.pkl"),
-)
-COMMUNES_PATH = os.environ.get(
-    "COMMUNES_PATH",
-    os.path.join(os.path.dirname(__file__), "../../../app/data/streamlit/communes_streamlit.csv"),
-)
 IMMO_API_KEY = os.environ.get("IMMO_API_KEY", "")
 
 mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
 
-# === Métriques Prometheus ===
-PREDICTION_COUNT = Counter("immo_predictions_total", "Nombre total de prédictions")
-PREDICTION_LATENCY = Histogram("immo_prediction_latency_seconds", "Latence des prédictions")
-PREDICTION_ERRORS = Counter("immo_prediction_errors_total", "Nombre d'erreurs de prédiction")
+# === Metriques Prometheus ===
+PREDICTION_COUNT = Counter("immo_predictions_total", "Nombre total de predictions")
+PREDICTION_LATENCY = Histogram("immo_prediction_latency_seconds", "Latence des predictions")
+PREDICTION_ERRORS = Counter("immo_prediction_errors_total", "Nombre d erreurs de prediction")
 
-# === État global ===
+# === Etat global ===
 state = {
-    "models": {},        # segment -> modèle XGBoost
-    "meta": None,        # dict avec q33, q66, features
-    "communes": None,    # DataFrame des communes
+    "model": None,
     "model_version": None,
     "model_loaded": False,
+    "features": None,
 }
+
+FEATURES = [
+    "surface_reelle_bati",
+    "nombre_pieces_principales",
+    "surface_terrain",
+    "annee",
+    "mois",
+    "code_departement",
+    "longitude",
+    "latitude",
+    "is_maison",
+    "is_neuf",
+    "anciennete_mois",
+    "surface_par_piece",
+    "revenu_median",
+    "taux_pauvrete",
+    "nb_equipements_total",
+    "population_2023",
+    "evolution_pop_5_ans",
+    "evolution_pop_10_ans",
+    "taux_cambriolages",
+    "taux_vols_total",
+    "taux_violences_total",
+    "commune_prix_m2",
+    "commune_volume",
+    "dept_prix_m2",
+    "dept_prix_m2_maison",
+    "commune_prix_m2_maison",
+    "commune_volume_maison",
+    "dept_prix_m2_appart",
+    "commune_prix_m2_appart",
+    "commune_volume_appart",
+    "prix_estime_commune",
+]
 
 
 # === Schemas ===
@@ -51,16 +75,15 @@ class PredictionRequest(BaseModel):
     surface_reelle_bati: float = Field(..., gt=0, le=1000)
     nombre_pieces_principales: int = Field(3, ge=1, le=30)
     type_bien: str = Field("appart")
-    code_commune: Optional[str] = Field(None, max_length=5)
-    code_departement: Optional[str] = Field(None, max_length=3)
-    latitude: Optional[float] = None
-    longitude: Optional[float] = None
     surface_terrain: float = Field(0.0, ge=0)
     annee: int = Field(2025, ge=2020, le=2035)
     mois: int = Field(6, ge=1, le=12)
-    target_dpe_num: int = Field(4, ge=1, le=7)
-    cout_total_5_usages: float = Field(0.0, ge=0)
-    age_construction: float = Field(30.0, ge=0)
+    code_departement: Optional[str] = Field(None, max_length=3)
+    longitude: Optional[float] = None
+    latitude: Optional[float] = None
+    commune_prix_m2: float = Field(3000.0, ge=0)
+    dept_prix_m2: float = Field(3000.0, ge=0)
+    prix_estime_commune: float = Field(3000.0, ge=0)
 
     @field_validator("type_bien")
     @classmethod
@@ -70,7 +93,7 @@ class PredictionRequest(BaseModel):
             return "appart"
         if v in ("maison",):
             return "maison"
-        raise ValueError("type_bien doit être 'appart' ou 'maison'")
+        raise ValueError("type_bien doit etre 'appart' ou 'maison'")
 
 
 class PredictionResponse(BaseModel):
@@ -78,196 +101,104 @@ class PredictionResponse(BaseModel):
     prediction_total_eur: float
     interval_low_eur: float
     interval_high_eur: float
-    model_segment: str
     model_version: Optional[str]
     features_used: int
 
 
-# === Chargement du modèle depuis MLflow ===
+# === Chargement du modele ===
 def load_model_from_mlflow() -> bool:
     client = mlflow.tracking.MlflowClient()
-
-    # Tentative 1 : alias "production"
     try:
         model_version = client.get_model_version_by_alias(MODEL_NAME, "production")
         run_id = model_version.run_id
-        meta_path = META_PATH
-
-        # Charger les 6 modèles depuis les artefacts du run
-        segments = ["bas_appart", "bas_maison", "milieu_appart", "milieu_maison", "haut_appart", "haut_maison"]
-        models = {}
-        for seg in segments:
-            uri = f"runs:/{run_id}/model_{seg}"
-            try:
-                models[seg] = mlflow.xgboost.load_model(uri)
-                logger.info(f"Modèle chargé depuis MLflow : {seg}")
-            except Exception as e:
-                logger.warning(f"Modèle {seg} non trouvé dans MLflow : {e}")
-
-        if models:
-            state["models"] = models
-            state["model_version"] = f"v{model_version.version}"
-            state["model_loaded"] = True
-            logger.info(f"✅ {len(models)} modèles chargés depuis MLflow registry (v{model_version.version})")
-            return True
-
-    except mlflow.exceptions.MlflowException:
-        logger.warning("Aucun modèle 'production' dans le registry MLflow — fallback sur .pkl")
-
-    # Tentative 2 : fallback sur les fichiers .pkl locaux
-    try:
-        models_dir = os.path.join(os.path.dirname(__file__), "../../../notebooks/Models")
-        segments = ["bas_appart", "bas_maison", "milieu_appart", "milieu_maison", "haut_appart", "haut_maison"]
-        models = {}
-        for seg in segments:
-            pkl_path = os.path.join(models_dir, f"model_xgb_{seg}.pkl")
-            if os.path.exists(pkl_path):
-                with open(pkl_path, "rb") as f:
-                    models[seg] = pickle.load(f)
-                logger.info(f"Modèle chargé depuis .pkl : {seg}")
-
-        if models:
-            state["models"] = models
-            state["model_version"] = "pkl_local"
-            state["model_loaded"] = True
-            logger.info(f"✅ {len(models)} modèles chargés depuis fichiers .pkl locaux")
-            return True
-
-    except Exception as e:
-        logger.error(f"Erreur chargement .pkl : {e}")
-
-    return False
-
-
-def load_meta() -> bool:
-    try:
-        with open(META_PATH, "rb") as f:
-            state["meta"] = pickle.load(f)
-        logger.info(f"Meta chargé : q33={state['meta']['q33']}, q66={state['meta']['q66']}")
+        uri = f"runs:/{run_id}/model"
+        state["model"] = mlflow.xgboost.load_model(uri)
+        state["model_version"] = f"v{model_version.version}"
+        state["model_loaded"] = True
+        if hasattr(state["model"], "feature_names_in_"):
+            state["features"] = list(state["model"].feature_names_in_)
+        else:
+            state["features"] = FEATURES
+        logger.info(f"Modele charge depuis MLflow registry (v{model_version.version})")
         return True
-    except Exception as e:
-        logger.error(f"Erreur chargement meta : {e}")
+    except mlflow.exceptions.MlflowException as e:
+        logger.error(f"Impossible de charger le modele : {e}")
         return False
 
 
-def load_communes() -> bool:
+# === Construction des features ===
+def build_features(req: PredictionRequest) -> pd.DataFrame:
+    is_maison = 1 if req.type_bien == "maison" else 0
+    surface_par_piece = req.surface_reelle_bati / max(req.nombre_pieces_principales, 1)
+
     try:
-        state["communes"] = pd.read_csv(COMMUNES_PATH, dtype={"code_commune": str}, low_memory=False)
-        logger.info(f"Communes chargées : {len(state['communes'])} lignes")
-        return True
-    except Exception as e:
-        logger.warning(f"CSV communes non trouvé : {e}")
-        return False
+        code_dep = int(req.code_departement.replace("A", "0").replace("B", "0")) if req.code_departement else 75
+    except Exception:
+        code_dep = 75
 
-
-# === Logique métier ===
-def get_tranche(prix_m2: float, q33: float, q66: float) -> str:
-    if prix_m2 < q33:
-        return "bas"
-    if prix_m2 <= q66:
-        return "milieu"
-    return "haut"
-
-
-def build_features(req: PredictionRequest) -> tuple[pd.DataFrame, str]:
-    meta = state["meta"]
-    features_list = meta["features"]
-    q33, q66 = meta["q33"], meta["q66"]
-
-    # Valeurs de base depuis la requête
     row = {
         "surface_reelle_bati": req.surface_reelle_bati,
         "nombre_pieces_principales": req.nombre_pieces_principales,
         "surface_terrain": req.surface_terrain,
         "annee": req.annee,
         "mois": req.mois,
-        "target_dpe_num": req.target_dpe_num,
-        "cout_total_5_usages": req.cout_total_5_usages,
-        "age_construction": req.age_construction,
-        "surface_par_piece": req.surface_reelle_bati / max(req.nombre_pieces_principales, 1),
+        "code_departement": code_dep,
+        "longitude": req.longitude or 2.3,
+        "latitude": req.latitude or 48.8,
+        "is_maison": is_maison,
+        "is_neuf": 0,
+        "anciennete_mois": 360,
+        "surface_par_piece": surface_par_piece,
+        "revenu_median": 22000.0,
+        "taux_pauvrete": 14.0,
+        "nb_equipements_total": 50,
+        "population_2023": 50000.0,
+        "evolution_pop_5_ans": 0.0,
+        "evolution_pop_10_ans": 0.0,
+        "taux_cambriolages": 5.0,
+        "taux_vols_total": 10.0,
+        "taux_violences_total": 8.0,
+        "commune_prix_m2": req.commune_prix_m2,
+        "commune_volume": 100.0,
+        "dept_prix_m2": req.dept_prix_m2,
+        "dept_prix_m2_maison": req.dept_prix_m2 * 0.9,
+        "commune_prix_m2_maison": req.commune_prix_m2 * 0.9,
+        "commune_volume_maison": 50.0,
+        "dept_prix_m2_appart": req.dept_prix_m2 * 1.1,
+        "commune_prix_m2_appart": req.commune_prix_m2 * 1.1,
+        "commune_volume_appart": 50.0,
+        "prix_estime_commune": req.prix_estime_commune,
     }
 
-    # Code département numérique
-    if req.code_departement:
-        try:
-            row["code_departement"] = int(req.code_departement.replace("A", "0").replace("B", "0"))
-        except Exception:
-            row["code_departement"] = 0
-
-    # Coordonnées GPS
-    if req.latitude:
-        row["latitude"] = req.latitude
-    if req.longitude:
-        row["longitude"] = req.longitude
-
-    # Enrichissement depuis le CSV communes
-    fallback_prix = (q33 + q66) / 2  # prix médian pour le routing
-    communes_df = state.get("communes")
-    if communes_df is not None and req.code_commune:
-        match = communes_df[communes_df["code_commune"].astype(str) == str(req.code_commune)]
-        if not match.empty:
-            commune_row = match.iloc[0]
-            for col in communes_df.columns:
-                if col not in row and col in features_list:
-                    val = commune_row.get(col)
-                    if pd.notna(val):
-                        row[col] = val
-            if "prix_m2_median" in commune_row:
-                fallback_prix = float(commune_row["prix_m2_median"])
-            elif "prix_moyen" in commune_row:
-                fallback_prix = float(commune_row["prix_moyen"])
-
-    # Construire le vecteur complet dans l'ordre exact des features
-    feature_row = {}
-    for feat in features_list:
-        if feat in row:
-            feature_row[feat] = row[feat]
-        elif communes_df is not None:
-            # Utiliser la médiane de la colonne si disponible
-            if feat in communes_df.columns:
-                feature_row[feat] = float(communes_df[feat].median())
-            else:
-                feature_row[feat] = 0.0
-        else:
-            feature_row[feat] = 0.0
-
-    X = pd.DataFrame([feature_row])
-
-    # Déterminer le segment
-    tranche = get_tranche(fallback_prix, q33, q66)
-    segment = f"{tranche}_{req.type_bien}"
-
-    return X, segment
+    features = state["features"] or FEATURES
+    X = pd.DataFrame([{f: row.get(f, 0.0) for f in features}])
+    return X
 
 
 # === Lifespan ===
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    logger.info("Démarrage de l'API Compagnon Immobilier...")
-    load_meta()
-    load_communes()
+    logger.info("Demarrage de l API Compagnon Immobilier...")
     load_model_from_mlflow()
     yield
-    logger.info("Arrêt de l'API.")
+    logger.info("Arret de l API.")
 
 
 # === Application FastAPI ===
 app = FastAPI(
-    title="Compagnon Immobilier — API de Prédiction",
-    description="Prédit le prix au m² d'un bien immobilier via 6 modèles XGBoost segmentés.",
-    version="2.0.0",
+    title="Compagnon Immobilier - API de Prediction",
+    description="Predit le prix au m2 d un bien immobilier via XGBoost.",
+    version="3.0.0",
     lifespan=lifespan,
 )
 
-# Endpoint Prometheus
 metrics_app = make_asgi_app()
 app.mount("/metrics", metrics_app)
 
 
-# === Sécurité ===
 def require_api_key(x_api_key: Optional[str] = Header(default=None)) -> None:
     if IMMO_API_KEY and x_api_key != IMMO_API_KEY:
-        raise HTTPException(status_code=401, detail="Clé API manquante ou invalide.")
+        raise HTTPException(status_code=401, detail="Cle API manquante ou invalide.")
 
 
 # === Routes ===
@@ -276,11 +207,8 @@ def health():
     return {
         "status": "ok" if state["model_loaded"] else "degraded",
         "model_loaded": state["model_loaded"],
-        "communes_loaded": state["communes"] is not None,
-        "meta_loaded": state["meta"] is not None,
         "model_version": state["model_version"],
         "model_name": MODEL_NAME,
-        "n_segments": len(state["models"]),
     }
 
 
@@ -290,33 +218,14 @@ def predict(req: PredictionRequest, x_api_key: Optional[str] = Header(default=No
 
     if not state["model_loaded"]:
         PREDICTION_ERRORS.inc()
-        raise HTTPException(status_code=503, detail="Modèles non disponibles. Lancez d'abord l'entraînement.")
+        raise HTTPException(status_code=503, detail="Modele non disponible.")
 
-    import time
     start = time.time()
-
     try:
-        X, segment = build_features(req)
-
-        if segment not in state["models"]:
-            # Fallback sur le segment le plus proche
-            available = list(state["models"].keys())
-            type_bien = req.type_bien
-            candidates = [s for s in available if s.endswith(type_bien)]
-            segment = candidates[0] if candidates else available[0]
-            logger.warning(f"Segment non trouvé, fallback sur : {segment}")
-
-        model = state["models"][segment]
-        # Aligner les features sur celles du modèle entraîné
-        if hasattr(model, "feature_names_in_"):
-            model_features = list(model.feature_names_in_)
-            for f in model_features:
-                if f not in X.columns:
-                    X[f] = 0.0
-            X = X[model_features]
-        prix_m2 = float(model.predict(X)[0])
-        prix_m2 = max(state["meta"]["prix_m2_min"], min(state["meta"]["prix_m2_max"], prix_m2))
-
+        X = build_features(req)
+        residuel = float(state["model"].predict(X)[0])
+        prix_m2 = residuel + req.commune_prix_m2
+        prix_m2 = max(300.0, min(15000.0, prix_m2))
         prix_total = prix_m2 * req.surface_reelle_bati
 
         PREDICTION_COUNT.inc()
@@ -327,15 +236,14 @@ def predict(req: PredictionRequest, x_api_key: Optional[str] = Header(default=No
             prediction_total_eur=round(prix_total, 2),
             interval_low_eur=round(prix_total * 0.85, 2),
             interval_high_eur=round(prix_total * 1.15, 2),
-            model_segment=segment,
             model_version=state["model_version"],
-            features_used=len(state["meta"]["features"]),
+            features_used=len(state["features"] or FEATURES),
         )
 
     except Exception as e:
         PREDICTION_ERRORS.inc()
-        logger.error(f"Erreur prédiction : {e}")
-        raise HTTPException(status_code=500, detail=f"Erreur de prédiction : {str(e)}")
+        logger.error(f"Erreur prediction : {e}")
+        raise HTTPException(status_code=500, detail=f"Erreur de prediction : {str(e)}")
 
 
 @app.get("/model/info")
@@ -348,22 +256,21 @@ def model_info():
             "model_name": MODEL_NAME,
             "production_version": model_version.version,
             "run_id": model_version.run_id,
-            "description": model_version.description,
             "metrics": {
-                "mae_global": run.data.metrics.get("mae_global"),
-                "r2_global": run.data.metrics.get("r2_global"),
-                "n_segments": run.data.metrics.get("n_segments_trained"),
+                "mae": run.data.metrics.get("mae"),
+                "r2": run.data.metrics.get("r2"),
+                "rmse": run.data.metrics.get("rmse"),
             },
             "params": {
-                "q33": run.data.params.get("q33"),
-                "q66": run.data.params.get("q66"),
+                "n_estimators": run.data.params.get("n_estimators"),
+                "max_depth": run.data.params.get("max_depth"),
+                "learning_rate": run.data.params.get("learning_rate"),
                 "n_features": run.data.params.get("n_features"),
             },
         }
-    except mlflow.exceptions.MlflowException as e:
+    except mlflow.exceptions.MlflowException:
         return {
             "model_name": MODEL_NAME,
             "production_version": None,
-            "info": "Aucun modèle en production dans le registry.",
-            "fallback": "Modèles .pkl locaux utilisés.",
+            "info": "Aucun modele en production.",
         }

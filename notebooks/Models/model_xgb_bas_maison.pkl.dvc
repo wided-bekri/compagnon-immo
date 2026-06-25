@@ -1,5 +1,0 @@
-outs:
-- md5: 75d05b608edaf3b06c0ac9414f0debe8
-  size: 9115768
-  hash: md5
-  path: model_xgb_bas_maison.pkl

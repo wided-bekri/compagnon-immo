@@ -49,7 +49,7 @@ gen_mockups.py
 *.bat
 contact.html
 k8s/
-models/
+# models/
 pyproject.toml
 .claude/
 .dockerignore
