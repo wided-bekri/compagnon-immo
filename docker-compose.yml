@@ -1,24 +1,21 @@
 services:
 
   mlflow:
-    image: python:3.11-slim
+    build:
+      context: .
+      dockerfile: dockerfiles/Dockerfile.mlflow
     container_name: immo-mlflow
-    command: >
-      bash -c "pip install mlflow>=2.14 --quiet &&
-               mlflow server
-               --host 0.0.0.0
-               --port 5000
-               --backend-store-uri sqlite:///mlflow.db
-               --default-artifact-root /mlflow/artifacts"
     ports:
       - "5000:5000"
     volumes:
-      - mlflow_data:/mlflow
+      - ./mlflow.db:/mlflow.db
+      - mlflow_artifacts:/mlflow/artifacts
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
       interval: 30s
       timeout: 10s
-      retries: 5
+      retries: 15
+      start_period: 120s
 
   api:
     build:
@@ -62,6 +59,81 @@ services:
     depends_on:
       - prometheus
 
+  postgres:
+    image: postgres:15
+    container_name: immo-postgres
+    environment:
+      - POSTGRES_USER=airflow
+      - POSTGRES_PASSWORD=airflow
+      - POSTGRES_DB=airflow
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      retries: 5
+
+  airflow-init:
+    image: apache/airflow:2.9.1-python3.11
+    container_name: immo-airflow-init
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres/airflow
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - AIRFLOW__WEBSERVER__SECRET_KEY=compagnon-immo-secret
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - airflow_logs:/opt/airflow/logs
+    command: >
+      bash -c "airflow db migrate &&
+               airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@immo.fr || true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  airflow-webserver:
+    image: apache/airflow:2.9.1-python3.11
+    container_name: immo-airflow-webserver
+    ports:
+      - "8080:8080"
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres/airflow
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - AIRFLOW__WEBSERVER__SECRET_KEY=compagnon-immo-secret
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - airflow_logs:/opt/airflow/logs
+    command: airflow webserver
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    image: apache/airflow:2.9.1-python3.11
+    container_name: immo-airflow-scheduler
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres/airflow
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - AIRFLOW__WEBSERVER__SECRET_KEY=compagnon-immo-secret
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - airflow_logs:/opt/airflow/logs
+    command: airflow scheduler
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+
 volumes:
-  mlflow_data:
+  mlflow_artifacts:
   grafana_data:
+  postgres_data:
+  airflow_logs:
