@@ -1,0 +1,23 @@
+stages:
+  prepare_streamlit_data:
+    cmd: python src/pipeline/prepare_streamlit_data.py
+    deps:
+      - src/pipeline/prepare_streamlit_data.py
+    outs:
+      - data/processed/streamlit_data.parquet
+
+  train_baseline:
+    cmd: python src/pipeline/train_pipeline.py
+    deps:
+      - src/pipeline/train_pipeline.py
+      - data/processed/streamlit_data.parquet
+    params:
+      - params.yaml:
+          - xgboost.n_estimators
+          - xgboost.max_depth
+          - xgboost.learning_rate
+    metrics:
+      - metrics/scores.json:
+          cache: false
+    outs:
+      - notebooks/Models/model_xgboost_single.pkl
