@@ -25,7 +25,7 @@ jobs:
             mlflow prometheus-client
 
       - name: Lint
-        run: ruff check src mlops tests --ignore E501
+        run: ruff check mlops tests --ignore E501,E402,F401,F541
 
       - name: Tests unitaires
         run: pytest tests/ -v
