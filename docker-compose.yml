@@ -31,10 +31,7 @@ services:
       - IMMO_API_KEY=${IMMO_API_KEY:-}
     volumes:
       - ./mlruns:/mlruns:ro
-    command: >
-      bash -c "mkdir -p '/C:/Users/wided/projet-immo' &&
-               ln -sfn /mlruns '/C:/Users/wided/projet-immo/mlruns' &&
-               uvicorn src.services.inference.inference_service:app --host 0.0.0.0 --port 8000"
+    command: uvicorn src.services.inference.inference_service:app --host 0.0.0.0 --port 8000
     depends_on:
       mlflow:
         condition: service_healthy
