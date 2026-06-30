@@ -106,6 +106,8 @@ class PredictionResponse(BaseModel):
 
 
 # === Chargement du modele ===
+PKL_FALLBACK = os.path.join(os.path.dirname(__file__), "..", "..", "..", "notebooks", "Models", "model_xgboost_single.pkl")
+
 def load_model_from_mlflow() -> bool:
     client = mlflow.tracking.MlflowClient()
     try:
@@ -121,8 +123,23 @@ def load_model_from_mlflow() -> bool:
             state["features"] = FEATURES
         logger.info(f"Modele charge depuis MLflow registry (v{model_version.version})")
         return True
-    except mlflow.exceptions.MlflowException as e:
-        logger.error(f"Impossible de charger le modele : {e}")
+    except Exception as e:
+        logger.warning(f"MLflow registry indisponible ({e}), tentative chargement pkl local...")
+        return _load_model_from_pkl()
+
+def _load_model_from_pkl() -> bool:
+    import pickle
+    pkl_path = os.environ.get("MODEL_PKL_PATH", PKL_FALLBACK)
+    try:
+        with open(pkl_path, "rb") as f:
+            state["model"] = pickle.load(f)
+        state["model_version"] = "pkl-local"
+        state["model_loaded"] = True
+        state["features"] = FEATURES
+        logger.info(f"Modele charge depuis fichier pkl : {pkl_path}")
+        return True
+    except Exception as e:
+        logger.error(f"Impossible de charger le modele pkl : {e}")
         return False
 
 
