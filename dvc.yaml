@@ -1,16 +1,15 @@
 stages:
   prepare_streamlit_data:
-    cmd: python src/pipeline/prepare_streamlit_data.py
+    cmd: python app/prepare_streamlit_data.py
     deps:
-      - src/pipeline/prepare_streamlit_data.py
+      - app/prepare_streamlit_data.py
     outs:
       - data/processed/streamlit_data.parquet
 
   train_baseline:
     cmd: python src/pipeline/train_model.py
     deps:
-      - src/pipeline/train_pipeline.py
-      - data/processed/streamlit_data.parquet
+      - src/pipeline/train_model.py
     params:
       - params.yaml:
           - xgboost.n_estimators

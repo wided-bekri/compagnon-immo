@@ -1,0 +1,9 @@
+{
+  "mae": 648.17,
+  "r2": 0.7956,
+  "rmse": 1014.49,
+  "mape": 31.45,
+  "n_train": 3581864,
+  "n_features": 31,
+  "model_version": "v5"
+}

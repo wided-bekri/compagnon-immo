@@ -1,0 +1,8 @@
+xgboost:
+  n_estimators: 800
+  max_depth: 8
+  learning_rate: 0.05
+  subsample: 0.8
+  colsample_bytree: 0.8
+  tree_method: hist
+  random_state: 42
