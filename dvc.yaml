@@ -7,7 +7,7 @@ stages:
       - data/processed/streamlit_data.parquet
 
   train_baseline:
-    cmd: python src/pipeline/train_pipeline.py
+    cmd: python src/pipeline/train_model.py
     deps:
       - src/pipeline/train_pipeline.py
       - data/processed/streamlit_data.parquet
