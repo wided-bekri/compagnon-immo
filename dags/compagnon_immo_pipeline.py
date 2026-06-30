@@ -1,7 +1,8 @@
 from datetime import datetime, timedelta
+import logging
+import requests
 from airflow import DAG
 from airflow.operators.python import PythonOperator
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -37,10 +38,24 @@ def train_model(**context):
     logger.info("train_model terminé avec succès")
     return {"status": "ok", "model": "xgboost_single", "r2": 0.7956}
 
+def reload_api_model(**context):
+    """Demande à l'API de recharger le nouveau modèle depuis MLflow registry."""
+    api_url = "http://api:8000/reload_model"
+    logger.info(f"Étape 4 : Rechargement du modèle via {api_url}...")
+    try:
+        response = requests.post(api_url, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+        logger.info(f"Modèle rechargé avec succès : version {data.get('model_version')}")
+        return {"status": "ok", "model_version": data.get("model_version")}
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Échec du rechargement du modèle : {e}")
+        raise
+
 with DAG(
     dag_id="compagnon_immo_pipeline",
     default_args=default_args,
-    description="Pipeline MLOps : collect → preprocess → train",
+    description="Pipeline MLOps : collect → preprocess → train → reload",
     schedule="@weekly",
     start_date=datetime(2026, 6, 1),
     catchup=False,
@@ -62,4 +77,9 @@ with DAG(
         python_callable=train_model,
     )
 
-    t1 >> t2 >> t3
+    t4 = PythonOperator(
+        task_id="reload_api_model",
+        python_callable=reload_api_model,
+    )
+
+    t1 >> t2 >> t3 >> t4

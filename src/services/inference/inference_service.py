@@ -246,6 +246,19 @@ def predict(req: PredictionRequest, x_api_key: Optional[str] = Header(default=No
         raise HTTPException(status_code=500, detail=f"Erreur de prediction : {str(e)}")
 
 
+@app.post("/reload_model")
+def reload_model(x_api_key: Optional[str] = Header(default=None)):
+    require_api_key(x_api_key)
+    success = load_model_from_mlflow()
+    if not success:
+        raise HTTPException(status_code=503, detail="Impossible de recharger le modele depuis MLflow.")
+    return {
+        "status": "ok",
+        "message": "Modele rechargé depuis MLflow registry (alias production).",
+        "model_version": state["model_version"],
+    }
+
+
 @app.get("/model/info")
 def model_info():
     client = mlflow.tracking.MlflowClient()
