@@ -40,17 +40,20 @@ def train_model(**context):
 
 def reload_api_model(**context):
     """Demande à l'API de recharger le nouveau modèle depuis MLflow registry."""
-    api_url = "http://api:8000/reload_model"
-    logger.info(f"Étape 4 : Rechargement du modèle via {api_url}...")
-    try:
-        response = requests.post(api_url, timeout=30)
-        response.raise_for_status()
-        data = response.json()
-        logger.info(f"Modèle rechargé avec succès : version {data.get('model_version')}")
-        return {"status": "ok", "model_version": data.get("model_version")}
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Échec du rechargement du modèle : {e}")
-        raise
+    for api_url in [
+        "http://immo-api:8000/reload_model",
+        "http://api:8000/reload_model",
+    ]:
+        try:
+            logger.info(f"Étape 4 : Rechargement du modèle via {api_url}...")
+            response = requests.post(api_url, timeout=30)
+            response.raise_for_status()
+            data = response.json()
+            logger.info(f"Modèle rechargé avec succès : version {data.get('model_version')}")
+            return {"status": "ok", "model_version": data.get("model_version")}
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"Tentative échouée sur {api_url} : {e}")
+    raise Exception("Impossible de contacter l'API.")
 
 with DAG(
     dag_id="compagnon_immo_pipeline",

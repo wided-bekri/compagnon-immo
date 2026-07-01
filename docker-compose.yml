@@ -12,6 +12,8 @@ services:
     volumes:
       - ./mlflow.db:/mlflow.db
       - mlflow_artifacts:/mlflow/artifacts
+    networks:
+      - immo-network
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
       interval: 30s
@@ -32,6 +34,8 @@ services:
     volumes:
       - ./mlruns:/mlruns:ro
     command: uvicorn src.services.inference.inference_service:app --host 0.0.0.0 --port 8000
+    networks:
+      - immo-network
     depends_on:
       mlflow:
         condition: service_healthy
@@ -50,6 +54,8 @@ services:
     ports:
       - "80:80"
       - "443:443"
+    networks:
+      - immo-network
     depends_on:
       api:
         condition: service_healthy
@@ -62,6 +68,8 @@ services:
       - "9090:9090"
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+    networks:
+      - immo-network
     depends_on:
       - api
 
@@ -75,6 +83,8 @@ services:
     volumes:
       - grafana_data:/var/lib/grafana
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+    networks:
+      - immo-network
     depends_on:
       - prometheus
 
@@ -87,6 +97,8 @@ services:
       - POSTGRES_DB=airflow
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    networks:
+      - immo-network
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "airflow"]
       interval: 10s
@@ -104,6 +116,8 @@ services:
     volumes:
       - ./dags:/opt/airflow/dags
       - airflow_logs:/opt/airflow/logs
+    networks:
+      - immo-network
     command: >
       bash -c "airflow db migrate &&
                airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@immo.fr || true"
@@ -125,6 +139,8 @@ services:
     volumes:
       - ./dags:/opt/airflow/dags
       - airflow_logs:/opt/airflow/logs
+    networks:
+      - immo-network
     command: airflow webserver
     depends_on:
       postgres:
@@ -144,6 +160,8 @@ services:
     volumes:
       - ./dags:/opt/airflow/dags
       - airflow_logs:/opt/airflow/logs
+    networks:
+      - immo-network
     command: airflow scheduler
     depends_on:
       postgres:
@@ -156,3 +174,7 @@ volumes:
   grafana_data:
   postgres_data:
   airflow_logs:
+
+networks:
+  immo-network:
+    driver: bridge
